@@ -1,0 +1,9 @@
+streamlit
+pandas
+chromadb
+sentence-transformers
+ollama
+pypdf
+sqlalchemy
+torch
+torchvision
