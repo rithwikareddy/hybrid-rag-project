@@ -2,7 +2,7 @@ streamlit
 pandas
 chromadb
 sentence-transformers
-ollama
+huggingface_hub
 pypdf
 sqlalchemy
 torch
