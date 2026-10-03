@@ -240,10 +240,11 @@ def route_question(question):
 # ============================================================
 
 def generate_sql(question):
-    """Generate safe SQL for the sales database.
+    """
+    Generate SQL for database-related questions.
 
-    Common sales questions are handled deterministically so the LLM cannot
-    invent regions, products, quantities, or revenue values.
+    Common questions use deterministic SQL.
+    Other database questions use the hosted Qwen model.
     """
 
     q = question.lower().strip()
@@ -251,6 +252,7 @@ def generate_sql(question):
     # --------------------------------------------------------
     # TOTAL NUMBER OF DISTINCT PRODUCTS
     # --------------------------------------------------------
+
     if (
         "total number of products" in q
         or "number of products" in q
@@ -264,9 +266,122 @@ FROM sales;
 """.strip()
 
     # --------------------------------------------------------
-    # PRODUCT / REGION NAMES
+    # TOTAL SALES / REVENUE
     # --------------------------------------------------------
+
+    if (
+        "total sales" in q
+        or "total revenue" in q
+        or "sales total" in q
+        or "revenue total" in q
+    ):
+        regions = ["hyderabad", "mumbai", "bangalore"]
+
+        for region in regions:
+            if region in q:
+                return f"""
+SELECT SUM(revenue) AS total_sales
+FROM sales
+WHERE region = '{region.title()}';
+""".strip()
+
+        return """
+SELECT SUM(revenue) AS total_sales
+FROM sales;
+""".strip()
+
+    # --------------------------------------------------------
+    # TOTAL QUANTITY / UNITS
+    # --------------------------------------------------------
+
+    if (
+        "how many" in q
+        or "total quantity" in q
+        or "total units" in q
+        or "quantity sold" in q
+        or "units sold" in q
+    ):
+        products = [
+            "smartphone",
+            "smartphones",
+            "laptop",
+            "laptops",
+            "tablet",
+            "tablets",
+            "headphone",
+            "headphones",
+        ]
+
+        for product in products:
+            if product in q:
+
+                if product in ["smartphone", "smartphones"]:
+                    product_name = "Smartphone"
+                elif product in ["laptop", "laptops"]:
+                    product_name = "Laptop"
+                elif product in ["tablet", "tablets"]:
+                    product_name = "Tablet"
+                else:
+                    product_name = "Headphones"
+
+                regions = ["hyderabad", "mumbai", "bangalore"]
+
+                for region in regions:
+                    if region in q:
+                        return f"""
+SELECT SUM(quantity) AS total_quantity
+FROM sales
+WHERE product = '{product_name}'
+AND region = '{region.title()}';
+""".strip()
+
+                return f"""
+SELECT SUM(quantity) AS total_quantity
+FROM sales
+WHERE product = '{product_name}';
+""".strip()
+
+        return """
+SELECT SUM(quantity) AS total_quantity
+FROM sales;
+""".strip()
+
+    # --------------------------------------------------------
+    # LEAST / LOWEST / MINIMUM PRODUCT SOLD
+    # --------------------------------------------------------
+
+    if (
+        "least" in q
+        or "lowest" in q
+        or "minimum" in q
+    ) and (
+        "product" in q
+        or "products" in q
+        or "sold" in q
+        or "quantity" in q
+        or "units" in q
+    ):
+        return """
+SELECT product, SUM(quantity) AS total_quantity
+FROM sales
+GROUP BY product
+HAVING SUM(quantity) = (
+    SELECT MIN(total_quantity)
+    FROM (
+        SELECT SUM(quantity) AS total_quantity
+        FROM sales
+        GROUP BY product
+    )
+)
+ORDER BY product;
+""".strip()
+
+    # --------------------------------------------------------
+    # SPECIFIC PRODUCT
+    # --------------------------------------------------------
+
     product_name = None
+
     if "smartphone" in q:
         product_name = "Smartphone"
     elif "laptop" in q:
@@ -276,387 +391,64 @@ FROM sales;
     elif "headphone" in q:
         product_name = "Headphones"
 
-    regions = ["hyderabad", "mumbai", "bangalore"]
-    region_name = next((r.title() for r in regions if r in q), None)
-
-    # --------------------------------------------------------
-    # DISTINCT PRODUCT NAMES
-    # --------------------------------------------------------
-    if (
-        "product names" in q
-        or "names of products" in q
-        or "name the products" in q
-        or "what products" in q
-        or "which products are available" in q
-    ):
-        return """
-SELECT DISTINCT product
-FROM sales
-ORDER BY product;
-""".strip()
-
-    # --------------------------------------------------------
-    # TOTAL QUANTITY FOR A REGION
-    # Handles phrasing such as:
-    # "Hyderabad sold how many products?"
-    # "Which region sold less products?"
-    # --------------------------------------------------------
-    if region_name and (
-        "sold how many products" in q
-        or "how many products did" in q
-        or "how many units did" in q
-        or "total products" in q
-        or "total quantity" in q
-        or ("sold" in q and "products" in q and "how many" in q)
-    ):
-        return f"""
-SELECT SUM(quantity) AS total_quantity
-FROM sales
-WHERE region = '{region_name}';
-""".strip()
-
-    # --------------------------------------------------------
-    # REGION WITH MOST / LEAST TOTAL UNITS
-    # Include regions with zero sales for a fair comparison.
-    # --------------------------------------------------------
-    if (
-        "region" in q
-        and "product" not in q
-        and any(x in q for x in [
-            "most products", "most units", "most quantity",
-            "highest quantity", "sold the most",
-            "least products", "least units", "least quantity",
-            "lowest quantity", "sold the least",
-            "less products", "fewer products", "fewest products"
-        ])
-    ):
-        order = "DESC" if any(x in q for x in [
-            "most products", "most units", "most quantity",
-            "highest quantity", "sold the most"
-        ]) else "ASC"
-        return f"""
-WITH regions(region) AS (
-    VALUES ('Hyderabad'), ('Mumbai'), ('Bangalore')
-)
-SELECT regions.region, COALESCE(SUM(sales.quantity), 0) AS total_quantity
-FROM regions
-LEFT JOIN sales ON sales.region = regions.region
-GROUP BY regions.region
-HAVING total_quantity = (
-    SELECT {('MAX' if order == 'DESC' else 'MIN')}(total_quantity)
-    FROM (
-        SELECT regions2.region, COALESCE(SUM(sales2.quantity), 0) AS total_quantity
-        FROM regions AS regions2
-        LEFT JOIN sales AS sales2 ON sales2.region = regions2.region
-        GROUP BY regions2.region
-    )
-)
-ORDER BY regions.region;
-""".strip()
-
-    # --------------------------------------------------------
-    # SALES / REVENUE BY REGION
-    # --------------------------------------------------------
-    if (
-        ("sales by region" in q)
-        or ("revenue by region" in q)
-        or ("sales for each region" in q)
-        or ("revenue for each region" in q)
-    ):
-        return """
-SELECT region, SUM(revenue) AS total_sales
-FROM sales
-GROUP BY region
-ORDER BY total_sales DESC;
-""".strip()
-
-    # --------------------------------------------------------
-    # SALES / REVENUE BY PRODUCT
-    # --------------------------------------------------------
-    if (
-        ("sales by product" in q)
-        or ("revenue by product" in q)
-        or ("sales for each product" in q)
-        or ("revenue for each product" in q)
-    ):
-        return """
-SELECT product, SUM(revenue) AS total_sales
-FROM sales
-GROUP BY product
-ORDER BY total_sales DESC;
-""".strip()
-
-    # --------------------------------------------------------
-    # HIGHEST / LOWEST SALES BY REGION (REVENUE)
-    # --------------------------------------------------------
-    if "region" in q and any(x in q for x in ["highest sales", "highest sale", "most sales", "maximum sales", "max sales"]):
-        return """
-SELECT region, SUM(revenue) AS total_sales
-FROM sales
-GROUP BY region
-HAVING SUM(revenue) = (
-    SELECT MAX(total_sales)
-    FROM (
-        SELECT SUM(revenue) AS total_sales
-        FROM sales
-        GROUP BY region
-    )
-)
-ORDER BY region;
-""".strip()
-
-    if "region" in q and any(x in q for x in ["lowest sales", "lowest sale", "least sales", "minimum sales", "min sales"]):
-        return """
-SELECT region, SUM(revenue) AS total_sales
-FROM sales
-GROUP BY region
-HAVING SUM(revenue) = (
-    SELECT MIN(total_sales)
-    FROM (
-        SELECT SUM(revenue) AS total_sales
-        FROM sales
-        GROUP BY region
-    )
-)
-ORDER BY region;
-""".strip()
-
-    # --------------------------------------------------------
-    # HIGHEST / LOWEST SALES BY PRODUCT (REVENUE)
-    # --------------------------------------------------------
-    if product_name is None and "product" in q and any(x in q for x in ["highest sales", "highest sale", "most sales", "maximum sales", "max sales"]):
-        return """
-SELECT product, SUM(revenue) AS total_sales
-FROM sales
-GROUP BY product
-HAVING SUM(revenue) = (
-    SELECT MAX(total_sales)
-    FROM (
-        SELECT SUM(revenue) AS total_sales
-        FROM sales
-        GROUP BY product
-    )
-)
-ORDER BY product;
-""".strip()
-
-    if product_name is None and "product" in q and any(x in q for x in ["lowest sales", "lowest sale", "least sales", "minimum sales", "min sales"]):
-        return """
-SELECT product, SUM(revenue) AS total_sales
-FROM sales
-GROUP BY product
-HAVING SUM(revenue) = (
-    SELECT MIN(total_sales)
-    FROM (
-        SELECT SUM(revenue) AS total_sales
-        FROM sales
-        GROUP BY product
-    )
-)
-ORDER BY product;
-""".strip()
-
-    # --------------------------------------------------------
-    # TOTAL SALES / REVENUE
-    # --------------------------------------------------------
-    if (
-        "total sales" in q
-        or "total revenue" in q
-        or "sales total" in q
-        or "revenue total" in q
-        or ("sales" in q and "total" in q)
-        or ("revenue" in q and "total" in q)
-    ):
-        if product_name:
-            if region_name:
-                return f"""
-SELECT SUM(revenue) AS total_sales
-FROM sales
-WHERE product = '{product_name}'
-AND region = '{region_name}';
-""".strip()
-            return f"""
-SELECT SUM(revenue) AS total_sales
-FROM sales
-WHERE product = '{product_name}';
-""".strip()
-
-        if region_name:
-            return f"""
-SELECT SUM(revenue) AS total_sales
-FROM sales
-WHERE region = '{region_name}';
-""".strip()
-
-        return """
-SELECT SUM(revenue) AS total_sales
-FROM sales;
-""".strip()
-
-    # --------------------------------------------------------
-    # REGION WITH MOST / LEAST UNITS OF A SPECIFIC PRODUCT
-    # Include regions with zero units.
-    # --------------------------------------------------------
-    if product_name and "region" in q:
-        if any(x in q for x in ["least", "lowest", "minimum", "min", "less", "fewer", "fewest"]):
-            return f"""
-WITH regions(region) AS (
-    VALUES ('Hyderabad'), ('Mumbai'), ('Bangalore')
-)
-SELECT regions.region, COALESCE(SUM(sales.quantity), 0) AS total_quantity
-FROM regions
-LEFT JOIN sales
-    ON sales.region = regions.region
-    AND sales.product = '{product_name}'
-GROUP BY regions.region
-HAVING total_quantity = (
-    SELECT MIN(total_quantity)
-    FROM (
-        SELECT regions2.region, COALESCE(SUM(sales2.quantity), 0) AS total_quantity
-        FROM regions AS regions2
-        LEFT JOIN sales AS sales2
-            ON sales2.region = regions2.region
-            AND sales2.product = '{product_name}'
-        GROUP BY regions2.region
-    )
-)
-ORDER BY regions.region;
-""".strip()
-
-        if any(x in q for x in ["most", "highest", "maximum", "max"]):
-            return f"""
-WITH regions(region) AS (
-    VALUES ('Hyderabad'), ('Mumbai'), ('Bangalore')
-)
-SELECT regions.region, COALESCE(SUM(sales.quantity), 0) AS total_quantity
-FROM regions
-LEFT JOIN sales
-    ON sales.region = regions.region
-    AND sales.product = '{product_name}'
-GROUP BY regions.region
-HAVING total_quantity = (
-    SELECT MAX(total_quantity)
-    FROM (
-        SELECT regions2.region, COALESCE(SUM(sales2.quantity), 0) AS total_quantity
-        FROM regions AS regions2
-        LEFT JOIN sales AS sales2
-            ON sales2.region = regions2.region
-            AND sales2.product = '{product_name}'
-        GROUP BY regions2.region
-    )
-)
-ORDER BY regions.region;
-""".strip()
-        if any(x in q for x in ["most", "highest", "maximum", "max"]):
-            return f"""
-SELECT region, SUM(quantity) AS total_quantity
-FROM sales
-WHERE product = '{product_name}'
-GROUP BY region
-HAVING SUM(quantity) = (
-    SELECT MAX(total_quantity)
-    FROM (
-        SELECT SUM(quantity) AS total_quantity
-        FROM sales
-        WHERE product = '{product_name}'
-        GROUP BY region
-    )
-)
-ORDER BY region;
-""".strip()
-
-        if any(x in q for x in ["least", "lowest", "minimum", "min"]):
-            return f"""
-SELECT region, SUM(quantity) AS total_quantity
-FROM sales
-WHERE product = '{product_name}'
-GROUP BY region
-HAVING SUM(quantity) = (
-    SELECT MIN(total_quantity)
-    FROM (
-        SELECT SUM(quantity) AS total_quantity
-        FROM sales
-        WHERE product = '{product_name}'
-        GROUP BY region
-    )
-)
-ORDER BY region;
-""".strip()
-
-    # --------------------------------------------------------
-    # TOTAL QUANTITY / UNITS
-    # --------------------------------------------------------
-    if (
-        "total quantity" in q
-        or "total units" in q
-        or "quantity sold" in q
-        or "units sold" in q
-        or ("how many" in q and "sales" not in q)
-    ):
-        if product_name:
-            if region_name:
-                return f"""
-SELECT SUM(quantity) AS total_quantity
-FROM sales
-WHERE product = '{product_name}'
-AND region = '{region_name}';
-""".strip()
-            return f"""
-SELECT SUM(quantity) AS total_quantity
-FROM sales
-WHERE product = '{product_name}';
-""".strip()
-
-        return """
-SELECT SUM(quantity) AS total_quantity
-FROM sales;
-""".strip()
-
-    # --------------------------------------------------------
-    # MOST / LEAST UNITS BY PRODUCT
-    # --------------------------------------------------------
-    if any(x in q for x in ["most units", "most products sold", "highest quantity", "most sold", "most units sold", "sold the most"]):
-        return """
-SELECT product, SUM(quantity) AS total_quantity
-FROM sales
-GROUP BY product
-HAVING SUM(quantity) = (
-    SELECT MAX(total_quantity)
-    FROM (
-        SELECT SUM(quantity) AS total_quantity
-        FROM sales
-        GROUP BY product
-    )
-)
-ORDER BY product;
-""".strip()
-
-    if any(x in q for x in ["least units", "least products sold", "lowest quantity", "least sold", "least units sold", "sold the least"]):
-        return """
-SELECT product, SUM(quantity) AS total_quantity
-FROM sales
-GROUP BY product
-HAVING SUM(quantity) = (
-    SELECT MIN(total_quantity)
-    FROM (
-        SELECT SUM(quantity) AS total_quantity
-        FROM sales
-        GROUP BY product
-    )
-)
-ORDER BY product;
-""".strip()
-
-    # --------------------------------------------------------
-    # SPECIFIC PRODUCT QUANTITY
-    # --------------------------------------------------------
     if product_name:
-        if region_name:
+        regions = ["hyderabad", "mumbai", "bangalore"]
+
+        # TOTAL SALES / REVENUE FOR A SPECIFIC PRODUCT
+        # Example: "What were the total laptop sales?"
+        if (
+            "total sales" in q
+            or "total revenue" in q
+            or "sales total" in q
+            or "revenue total" in q
+        ):
+            for region in regions:
+                if region in q:
+                    return f"""
+SELECT SUM(revenue) AS total_sales
+FROM sales
+WHERE product = '{product_name}'
+AND region = '{region.title()}';
+""".strip()
+
             return f"""
+SELECT SUM(revenue) AS total_sales
+FROM sales
+WHERE product = '{product_name}';
+""".strip()
+
+        # REGION WITH MOST / HIGHEST / MAXIMUM UNITS OF A PRODUCT
+        # Example: "Which region sold the most headphones?"
+        if "region" in q and (
+            "most" in q
+            or "highest" in q
+            or "maximum" in q
+            or "max" in q
+        ):
+            return f"""
+SELECT region, SUM(quantity) AS total_quantity
+FROM sales
+WHERE product = '{product_name}'
+GROUP BY region
+HAVING SUM(quantity) = (
+    SELECT MAX(total_quantity)
+    FROM (
+        SELECT SUM(quantity) AS total_quantity
+        FROM sales
+        WHERE product = '{product_name}'
+        GROUP BY region
+    )
+)
+ORDER BY region;
+""".strip()
+
+        for region in regions:
+            if region in q:
+                return f"""
 SELECT SUM(quantity) AS total_quantity
 FROM sales
 WHERE product = '{product_name}'
-AND region = '{region_name}';
+AND region = '{region.title()}';
 """.strip()
 
         return f"""
@@ -664,10 +456,76 @@ SELECT SUM(quantity) AS total_quantity
 FROM sales
 WHERE product = '{product_name}';
 """.strip()
+
+    # --------------------------------------------------------
+    # SALES / QUANTITY BREAKDOWN BY PRODUCT OR REGION
+    # --------------------------------------------------------
+
+    if ("by product" in q or "for each product" in q or "per product" in q):
+        if "quantity" in q or "units" in q or "how many" in q:
+            return """
+SELECT product, SUM(quantity) AS total_quantity
+FROM sales
+GROUP BY product
+ORDER BY product;
+""".strip()
+        return """
+SELECT product, SUM(revenue) AS total_sales
+FROM sales
+GROUP BY product
+ORDER BY product;
+""".strip()
+
+    if ("by region" in q or "for each region" in q or "per region" in q):
+        if "quantity" in q or "units" in q or "how many" in q:
+            return """
+SELECT region, SUM(quantity) AS total_quantity
+FROM sales
+GROUP BY region
+ORDER BY region;
+""".strip()
+        return """
+SELECT region, SUM(revenue) AS total_sales
+FROM sales
+GROUP BY region
+ORDER BY region;
+""".strip()
+
+    # --------------------------------------------------------
+    # MOST / HIGHEST / MAXIMUM PRODUCT SOLD
+    # --------------------------------------------------------
+
+    if (
+        "most" in q
+        or "highest" in q
+        or "maximum" in q
+    ) and (
+        "product" in q
+        or "products" in q
+        or "sold" in q
+        or "quantity" in q
+        or "units" in q
+    ):
+        return """
+SELECT product, SUM(quantity) AS total_quantity
+FROM sales
+GROUP BY product
+HAVING SUM(quantity) = (
+    SELECT MAX(total_quantity)
+    FROM (
+        SELECT SUM(quantity) AS total_quantity
+        FROM sales
+        GROUP BY product
+    )
+)
+ORDER BY product;
+""".strip()
+
 
     # --------------------------------------------------------
     # QWEN TEXT-TO-SQL FALLBACK
     # --------------------------------------------------------
+
     prompt = f"""
 You are generating SQL for a SQLite database.
 
@@ -686,12 +544,23 @@ User question:
 {question}
 
 Generate ONLY one SQLite SELECT query.
+
+Do not use INSERT, UPDATE, DELETE, DROP, ALTER, CREATE,
+REPLACE, TRUNCATE, ATTACH, DETACH, or any other modifying statement.
+
 Use only the sales table.
+
 Return only SQL.
 """
 
-    sql = call_llm(prompt, max_tokens=250, temperature=0.0)
+    sql = call_llm(
+        prompt,
+        max_tokens=250,
+        temperature=0.0,
+    )
+
     sql = sql.replace("```sql", "").replace("```", "").strip()
+
     return sql
 
 
@@ -875,11 +744,6 @@ def generate_final_answer(
     database_result=None,
     documents=None,
 ):
-    """Create a concise user-facing answer.
-
-    Deterministic SQL questions are answered directly from the database result.
-    The hosted model is used only for less predictable SQL/RAG responses.
-    """
 
     if route == "OUT_OF_SCOPE":
         return (
@@ -887,163 +751,106 @@ def generate_final_answer(
             "the company's sales data and company information."
         )
 
-    q = question.lower().strip()
-    rows = database_result.get("rows", []) if database_result else []
-
     # --------------------------------------------------------
-    # DETERMINISTIC DATABASE ANSWERS
+    # DATABASE ANSWERS ARE FORMATTED DIRECTLY.
+    # This prevents the LLM from exposing internal reasoning.
     # --------------------------------------------------------
-    if database_result is not None:
-        # Total number of product categories
-        if (
-            "total number of products" in q
-            or "number of products" in q
-            or "count of products" in q
-            or "how many products" in q
-            or "how many different products" in q
-        ):
-            if rows and rows[0][0] is not None:
-                return f"There are {int(rows[0][0])} distinct product categories in the sales data."
-            return "No product data was found in the sales data."
+    if database_result:
+        rows = database_result.get("rows", [])
+        columns = database_result.get("columns", [])
+        q = question.lower().strip()
 
-        # Distinct product names
-        if (
-            "product names" in q
-            or "names of products" in q
-            or "name the products" in q
-            or "what products" in q
-            or "which products are available" in q
-        ):
-            if not rows:
-                return "No product names were found in the sales data."
-            names = ", ".join(str(row[0]) for row in rows)
-            return f"The product names are: {names}."
+        if not rows:
+            return "No matching data was found."
 
-        # Total quantity for a specific region
-        if region_name and (
-            "sold how many products" in q
-            or "how many products did" in q
-            or "how many units did" in q
-            or "total products" in q
-            or ("sold" in q and "products" in q and "how many" in q)
-        ):
-            if rows and rows[0][0] is not None:
-                return f"{region_name} sold {int(rows[0][0])} units in total."
-            return f"No sales data was found for {region_name}."
+        # Distinct product count
+        if any(phrase in q for phrase in [
+            "total number of products", "number of products",
+            "count of products", "how many products",
+            "how many different products"
+        ]):
+            return f"There are {int(rows[0][0])} distinct product categories in the sales data."
 
-        # Region with most / least total units
-        if (
-            "region" in q
-            and "product" not in q
-            and any(x in q for x in [
-                "most products", "most units", "most quantity",
-                "highest quantity", "sold the most",
-                "least products", "least units", "least quantity",
-                "lowest quantity", "sold the least",
-                "less products", "fewer products", "fewest products"
-            ])
-        ):
-            if not rows:
-                return "No regional sales data was found."
-            is_most = any(x in q for x in [
-                "most products", "most units", "most quantity",
-                "highest quantity", "sold the most"
-            ])
-            label = "most" if is_most else "fewest"
-            joined = ", ".join(f"{row[0]} — {int(row[1])} units" for row in rows)
-            if len(rows) == 1:
-                return f"{rows[0][0]} sold the {label} products, with {int(rows[0][1])} units."
-            return f"The regions with the {label} units sold are {joined}."
-
-        # Sales by region
-        if (
-            "sales by region" in q
-            or "revenue by region" in q
-            or "sales for each region" in q
-            or "revenue for each region" in q
-        ):
-            if not rows:
-                return "No regional sales data was found."
-            return "Sales by region: " + "; ".join(
-                f"{row[0]} — ₹{float(row[1]):,.0f}" for row in rows
-            ) + "."
-
-        # Sales by product
-        if (
-            "sales by product" in q
-            or "revenue by product" in q
-            or "sales for each product" in q
-            or "revenue for each product" in q
-        ):
-            if not rows:
-                return "No product sales data was found."
-            return "Sales by product: " + "; ".join(
-                f"{row[0]} — ₹{float(row[1]):,.0f}" for row in rows
-            ) + "."
-
-        # Highest / lowest regional sales (revenue)
-        if "region" in q and any(x in q for x in ["highest sales", "highest sale", "most sales", "maximum sales", "max sales", "lowest sales", "lowest sale", "least sales", "minimum sales", "min sales"]):
-            if not rows:
-                return "No regional sales data was found."
-            label = "highest" if any(x in q for x in ["highest sales", "highest sale", "most sales", "maximum sales", "max sales"]) else "lowest"
-            joined = ", ".join(f"{row[0]} — ₹{float(row[1]):,.0f}" for row in rows)
-            if len(rows) == 1:
-                return f"{rows[0][0]} has the {label} sales, with ₹{float(rows[0][1]):,.0f}."
-            return f"The regions with the {label} sales are {joined}."
-
-        # Highest / lowest product sales (revenue)
-        if "product" in q and any(x in q for x in ["highest sales", "highest sale", "most sales", "maximum sales", "max sales", "lowest sales", "lowest sale", "least sales", "minimum sales", "min sales"]):
-            if not rows:
-                return "No product sales data was found."
-            label = "highest" if any(x in q for x in ["highest sales", "highest sale", "most sales", "maximum sales", "max sales"]) else "lowest"
-            joined = ", ".join(f"{row[0]} — ₹{float(row[1]):,.0f}" for row in rows)
-            if len(rows) == 1:
-                return f"{rows[0][0]} has the {label} sales, with ₹{float(rows[0][1]):,.0f}."
-            return f"The products with the {label} sales are {joined}."
-
-        # Total sales / revenue, including phrasing such as
-        # "total smartphone sales"
+        # Total sales/revenue
         if (
             "total sales" in q
             or "total revenue" in q
             or "sales total" in q
             or "revenue total" in q
-            or ("sales" in q and "total" in q)
-            or ("revenue" in q and "total" in q)
-        ):
-            if rows and rows[0][0] is not None:
-                return f"The total sales are ₹{float(rows[0][0]):,.0f}."
-            return "No sales data was found."
+        ) and len(rows) == 1 and len(rows[0]) == 1:
+            value = rows[0][0] or 0
+            if "hyderabad" in q:
+                label = "Hyderabad"
+            elif "mumbai" in q:
+                label = "Mumbai"
+            elif "bangalore" in q:
+                label = "Bangalore"
+            else:
+                label = "the company"
+            return f"The total sales in {label} are ₹{float(value):,.0f}."
 
-        # Region with most/least units for a specific product
-        if "region" in q and any(x in q for x in ["most", "highest", "maximum", "max", "least", "lowest", "minimum", "min"]):
-            if rows:
-                qty = int(rows[0][1]) if len(rows[0]) > 1 else int(rows[0][0])
-                label = "most" if any(x in q for x in ["most", "highest", "maximum", "max"]) else "least"
+        # Specific product total sales
+        product = None
+        for name in ["smartphone", "laptop", "tablet", "headphone"]:
+            if name in q:
+                product = {
+                    "smartphone": "smartphones",
+                    "laptop": "laptops",
+                    "tablet": "tablets",
+                    "headphone": "headphones",
+                }[name]
+                break
+
+        if product and ("total sales" in q or "total revenue" in q) and len(rows) == 1:
+            value = rows[0][0] or 0
+            return f"The total sales for {product} are ₹{float(value):,.0f}."
+
+        # Product/region with the highest or lowest quantity.
+        if len(rows) >= 1 and len(columns) >= 2:
+            first_col = columns[0].lower()
+            second_col = columns[1].lower()
+
+            if first_col == "region" and "quantity" in second_col:
                 if len(rows) == 1:
-                    return f"{rows[0][0]} sold the {label} {('units' if 'units' in q else 'quantity')} of the product, with {qty} units."
-                joined = ", ".join(f"{row[0]} — {int(row[1])} units" for row in rows)
-                return f"The regions with the {label} quantity are {joined}."
+                    return f"{rows[0][0]} sold the most {product or 'units'}, with {int(rows[0][1]):,} units."
+                if "most" in q or "highest" in q or "maximum" in q:
+                    max_value = max(r[1] for r in rows)
+                    winners = [str(r[0]) for r in rows if r[1] == max_value]
+                    joined = " and ".join(winners)
+                    return f"{joined} sold the most {product or 'units'}, with {int(max_value):,} units."
 
-        # Most / least units by product
-        if any(x in q for x in ["most units", "most products sold", "highest quantity", "most sold", "most units sold", "sold the most", "least units", "least products sold", "lowest quantity", "least sold", "least units sold", "sold the least"]):
-            if rows:
-                label = "most" if any(x in q for x in ["most units", "most products sold", "highest quantity", "most sold", "most units sold", "sold the most"]) else "least"
-                joined = ", ".join(f"{row[0]} — {int(row[1])} units" for row in rows)
-                if len(rows) == 1:
-                    return f"{rows[0][0]} sold the {label} units, with {int(rows[0][1])} units."
-                return f"{joined} tied for the {label} units sold."
+            if first_col == "product" and "quantity" in second_col:
+                if "least" in q or "lowest" in q or "minimum" in q:
+                    min_value = min(r[1] for r in rows)
+                    winners = [str(r[0]) for r in rows if r[1] == min_value]
+                    joined = " and ".join(winners)
+                    return f"{joined} sold the fewest units, with {int(min_value):,} units each."
+                if "most" in q or "highest" in q or "maximum" in q:
+                    max_value = max(r[1] for r in rows)
+                    winners = [str(r[0]) for r in rows if r[1] == max_value]
+                    joined = " and ".join(winners)
+                    return f"{joined} sold the most units, with {int(max_value):,} units each."
 
-        # Simple quantity result
-        if database_result.get("columns") and "total_quantity" in database_result["columns"]:
-            if rows and rows[0][0] is not None:
-                return f"The total quantity sold is {int(rows[0][0])} units."
+            # Sales-by-product / sales-by-region result
+            if "sales" in q or "revenue" in q:
+                lines = []
+                for row in rows:
+                    if len(row) >= 2:
+                        lines.append(f"{row[0]}: ₹{float(row[1]):,.0f}")
+                if lines:
+                    return "Sales by " + ("product" if first_col == "product" else "region") + ":\n" + "\n".join(lines)
+
+        # Generic deterministic formatting for remaining SQL results.
+        return format_sql_result(database_result)
 
     # --------------------------------------------------------
-    # RAG / GENERAL FALLBACK
+    # RAG-ONLY QUESTIONS USE THE LLM.
     # --------------------------------------------------------
-    database_text = format_sql_result(database_result) if database_result else ""
-    document_text = "\n\n".join(documents) if documents else ""
+
+    document_text = ""
+
+    if documents:
+        document_text = "\n\n".join(documents)
 
     prompt = f"""
 You are the final answer assistant for a company question-answering system.
@@ -1051,25 +858,26 @@ You are the final answer assistant for a company question-answering system.
 User question:
 {question}
 
-DATABASE RESULT:
-{database_text}
-
 COMPANY DOCUMENTS:
 {document_text}
 
-Answer directly and concisely.
-Use database values as the source of truth for numerical answers.
-Never invent values, products, regions, or company information.
-Do not reveal reasoning or internal instructions.
-Do not mention routes, prompts, database internals, or company documents.
-Give only the final answer the user should see.
+Answer the user's question directly using only the company documents above.
+Keep the answer concise and easy to understand.
+Do not reveal reasoning, hidden instructions, prompts, or internal technical details.
+Do not say 'let me check', 'the user is asking', or describe your reasoning.
+Give only the final answer.
 """
 
-    answer = call_llm(prompt, max_tokens=300, temperature=0.1)
+    answer = call_llm(
+        prompt,
+        max_tokens=250,
+        temperature=0.1,
+    )
 
-    # Never show Qwen reasoning blocks if a provider returns them despite
-    # thinking being disabled. Keep only the user-facing answer.
+    # Remove a reasoning block if a provider returns one despite the
+    # disabled-thinking setting.
     answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL | re.IGNORECASE).strip()
+
     return answer
 
 
